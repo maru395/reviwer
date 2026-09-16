@@ -29,6 +29,7 @@
       --radius-panel: 18px;
       --radius-control: 12px;
       --max: 1180px;
+      --support-banner-height: 0px;
     }
 
     * { box-sizing: border-box; }
@@ -148,13 +149,17 @@
     }
 
     .support-banner {
+      position: sticky;
+      top: 0;
+      z-index: 4;
       border-bottom: 1px solid #a9c2e8;
       background: var(--accent-soft);
       color: var(--accent-ink);
+      box-shadow: 0 8px 24px rgba(26, 67, 126, 0.12);
     }
 
     .support-banner-inner {
-      min-height: 54px;
+      min-height: 76px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -164,7 +169,7 @@
 
     .support-banner-copy {
       margin: 0;
-      font-size: 0.94rem;
+      font-size: 1rem;
       font-weight: 680;
       line-height: 1.4;
     }
@@ -172,15 +177,18 @@
     .support-banner-copy strong { font-weight: 820; }
 
     .support-banner-link {
-      min-height: 38px;
-      padding: 8px 13px;
+      min-height: 50px;
+      padding: 13px 22px;
       border-color: var(--accent);
-      background: var(--surface-strong);
-      color: var(--accent-ink);
+      background: var(--accent);
+      color: #f8fbff;
+      font-size: 1.02rem;
+      font-weight: 800;
+      box-shadow: 0 6px 16px rgba(20, 86, 192, 0.2);
     }
 
     .support-banner-link:hover {
-      background: var(--accent);
+      background: var(--accent-hover);
       color: #f8fbff;
     }
 
@@ -314,7 +322,7 @@
 
     .quiz-header {
       position: sticky;
-      top: 0;
+      top: var(--support-banner-height);
       z-index: 2;
       background: color-mix(in srgb, var(--bg) 92%, transparent);
       backdrop-filter: blur(14px);
@@ -683,6 +691,14 @@
       font-weight: 700;
     }
 
+    .blackout-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      background: #000000;
+      cursor: none;
+    }
+
     @media (prefers-reduced-motion: no-preference) {
       .quiz-row { animation: enter 440ms cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: calc(var(--row-index) * 70ms); }
       @keyframes enter { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
@@ -745,7 +761,7 @@
 
     @media print {
       body { background: #fdfefe; color: #10233f; }
-      .support-banner, .site-header, .quiz-header, .result-actions, .review-toolbar select, .toast, .payment-wall { display: none !important; }
+      .support-banner, .site-header, .quiz-header, .result-actions, .review-toolbar select, .toast, .payment-wall, .blackout-overlay { display: none !important; }
       .shell { width: 100%; }
       .results-main { padding: 0; }
       .results-panel, .review-item { box-shadow: none; break-inside: avoid; }
@@ -892,6 +908,7 @@
   </section>
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <div class="blackout-overlay" id="blackoutOverlay" aria-hidden="true" hidden></div>
 
   <dialog class="payment-wall" id="paymentWall" aria-labelledby="paymentWallTitle" aria-describedby="paymentWallDescription">
     <div class="payment-wall-content">
@@ -922,9 +939,18 @@
       paymentUrl: 'https://payment.example/REPLACE_ME',
       paywallIntervalMs: 60 * 1000
     });
+    const BLACKOUT_CONFIG = Object.freeze({
+      minimumDelayMs: 45 * 1000,
+      maximumDelayMs: 150 * 1000,
+      minimumDurationMs: 1200,
+      maximumDurationMs: 3000
+    });
 
     let paywallTimerId = null;
     let paywallPausedQuiz = false;
+    let blackoutTimerId = null;
+    let blackoutEndTimerId = null;
+    let blackoutPausedQuiz = false;
 
     const state = {
       quiz: null,
@@ -971,6 +997,8 @@
       reviewFilter: document.getElementById('reviewFilter'),
       reviewList: document.getElementById('reviewList'),
       toast: document.getElementById('toast'),
+      blackoutOverlay: document.getElementById('blackoutOverlay'),
+      supportBanner: document.querySelector('.support-banner'),
       githubAdLink: document.getElementById('githubAdLink'),
       paymentWall: document.getElementById('paymentWall'),
       paymentLink: document.getElementById('paymentLink'),
@@ -980,6 +1008,18 @@
 
     elements.githubAdLink.href = SUPPORT_CONFIG.githubUrl;
     elements.paymentLink.href = SUPPORT_CONFIG.paymentUrl;
+
+    function syncSupportBannerHeight() {
+      document.documentElement.style.setProperty('--support-banner-height', elements.supportBanner.offsetHeight + 'px');
+    }
+
+    syncSupportBannerHeight();
+    if ('ResizeObserver' in window) {
+      const supportBannerObserver = new ResizeObserver(syncSupportBannerHeight);
+      supportBannerObserver.observe(elements.supportBanner);
+    } else {
+      window.addEventListener('resize', syncSupportBannerHeight);
+    }
 
     function escapeHtml(value) {
       return String(value)
@@ -1371,6 +1411,10 @@
 
     function openPaymentWall() {
       if (elements.paymentWall.open) return;
+      if (!elements.blackoutOverlay.hidden) {
+        paywallTimerId = window.setTimeout(openPaymentWall, 1000);
+        return;
+      }
       paywallPausedQuiz = Boolean(state.quiz && !elements.quizView.hidden && state.timerId);
 
       if (paywallPausedQuiz) {
@@ -1394,6 +1438,47 @@
 
       paywallPausedQuiz = false;
       schedulePaymentWall();
+    }
+
+    function randomMilliseconds(minimum, maximum) {
+      return Math.floor(Math.random() * (maximum - minimum + 1)) + minimum;
+    }
+
+    function scheduleBlackout() {
+      window.clearTimeout(blackoutTimerId);
+      const delay = randomMilliseconds(BLACKOUT_CONFIG.minimumDelayMs, BLACKOUT_CONFIG.maximumDelayMs);
+      blackoutTimerId = window.setTimeout(startBlackout, delay);
+    }
+
+    function startBlackout() {
+      if (document.hidden || elements.paymentWall.open) {
+        scheduleBlackout();
+        return;
+      }
+
+      blackoutPausedQuiz = Boolean(state.quiz && !elements.quizView.hidden && state.timerId);
+      if (blackoutPausedQuiz) {
+        state.remaining = Math.max(0, Math.ceil((state.deadline - Date.now()) / 1000));
+        stopTimer();
+      }
+
+      elements.blackoutOverlay.hidden = false;
+      const duration = randomMilliseconds(BLACKOUT_CONFIG.minimumDurationMs, BLACKOUT_CONFIG.maximumDurationMs);
+      blackoutEndTimerId = window.setTimeout(endBlackout, duration);
+    }
+
+    function endBlackout() {
+      if (elements.blackoutOverlay.hidden) return;
+      window.clearTimeout(blackoutEndTimerId);
+      elements.blackoutOverlay.hidden = true;
+
+      if (blackoutPausedQuiz && state.quiz && !elements.quizView.hidden) {
+        state.deadline = Date.now() + state.remaining * 1000;
+        startTimer();
+      }
+
+      blackoutPausedQuiz = false;
+      scheduleBlackout();
     }
 
     function handleConfiguredLink(event, url, label, statusElement = null) {
@@ -1436,6 +1521,12 @@
     });
 
     window.addEventListener('keydown', (event) => {
+      if (!elements.blackoutOverlay.hidden) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.key === 'Escape') endBlackout();
+        return;
+      }
       if (elements.paymentWall.open) return;
       if (elements.quizView.hidden || !state.quiz) return;
       if (event.altKey || event.ctrlKey || event.metaKey) return;
@@ -1476,6 +1567,7 @@
 
     renderHome();
     schedulePaymentWall();
+    scheduleBlackout();
   </script>
 </body>
 </html>
