@@ -792,9 +792,39 @@
       cursor: none;
     }
 
+    .checkpoint-failure-warning {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: #b42318;
+      color: #fff7f6;
+      text-align: center;
+    }
+
+    .checkpoint-failure-warning strong {
+      display: block;
+      font-size: clamp(2.7rem, 10vw, 7rem);
+      font-weight: 900;
+      letter-spacing: -0.06em;
+      line-height: 0.95;
+      text-transform: uppercase;
+    }
+
+    .checkpoint-failure-warning span {
+      display: block;
+      margin-top: 18px;
+      font-size: clamp(1.05rem, 3vw, 1.55rem);
+      font-weight: 750;
+    }
+
     @media (prefers-reduced-motion: no-preference) {
       .quiz-row { animation: enter 440ms cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: calc(var(--row-index) * 70ms); }
       @keyframes enter { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+      .checkpoint-failure-warning:not([hidden]) { animation: checkpoint-warning-blink 180ms steps(1, end) 7; }
+      @keyframes checkpoint-warning-blink { 0%, 100% { background: #b42318; } 50% { background: #3b0707; } }
     }
 
     @media (max-width: 900px) {
@@ -855,7 +885,7 @@
 
     @media print {
       body { background: #fdfefe; color: #10233f; }
-      .support-banner, .site-header, .quiz-header, .result-actions, .review-toolbar select, .toast, .payment-wall, .brain-break-dialog, .blackout-overlay { display: none !important; }
+      .support-banner, .site-header, .quiz-header, .result-actions, .review-toolbar select, .toast, .payment-wall, .brain-break-dialog, .blackout-overlay, .checkpoint-failure-warning { display: none !important; }
       .shell { width: 100%; }
       .results-main { padding: 0; }
       .results-panel, .review-item { box-shadow: none; break-inside: avoid; }
@@ -1003,6 +1033,12 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
   <div class="blackout-overlay" id="blackoutOverlay" aria-hidden="true" hidden></div>
+  <div class="checkpoint-failure-warning" id="checkpointFailureWarning" role="alert" aria-live="assertive" hidden>
+    <div>
+      <strong>Wrong answer</strong>
+      <span>Warning: restarting this quiz at Question 1.</span>
+    </div>
+  </div>
 
   <dialog class="brain-break-dialog" id="brainBreakDialog" aria-labelledby="brainBreakTitle" aria-describedby="brainBreakQuestion">
     <div class="brain-break-content">
@@ -1042,7 +1078,7 @@
     const STORAGE_KEY = 'reviewer-hub-progress-v1';
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
     const SUPPORT_CONFIG = Object.freeze({
-      githubUrl: 'https://github.com/maru395',
+      githubUrl: 'https://github.com/REPLACE_ME',
       paymentUrl: 'https://payment.example/REPLACE_ME',
       paywallIntervalMs: 60 * 1000
     });
@@ -1110,6 +1146,7 @@
     let blackoutTimerId = null;
     let blackoutEndTimerId = null;
     let blackoutPausedQuiz = false;
+    let checkpointResetTimerId = null;
 
     const state = {
       quiz: null,
@@ -1161,6 +1198,7 @@
       reviewList: document.getElementById('reviewList'),
       toast: document.getElementById('toast'),
       blackoutOverlay: document.getElementById('blackoutOverlay'),
+      checkpointFailureWarning: document.getElementById('checkpointFailureWarning'),
       brainBreakDialog: document.getElementById('brainBreakDialog'),
       brainBreakLabel: document.getElementById('brainBreakLabel'),
       brainBreakQuestion: document.getElementById('brainBreakQuestion'),
@@ -1520,10 +1558,11 @@
 
       elements.brainBreakFeedback.hidden = false;
       if (!isCorrect) {
-        button.disabled = true;
         button.classList.add('wrong');
+        elements.brainBreakOptions.querySelectorAll('button').forEach((option) => { option.disabled = true; });
         elements.brainBreakFeedback.className = 'brain-break-feedback bad';
-        elements.brainBreakFeedback.textContent = 'Not quite. Try another answer.';
+        elements.brainBreakFeedback.textContent = 'Wrong answer. This quiz will restart at Question 1.';
+        triggerCheckpointFailure();
         return;
       }
 
@@ -1538,6 +1577,28 @@
       }
       saveProgress(false);
       elements.continueAfterBrainBreak.focus();
+    }
+
+    function triggerCheckpointFailure() {
+      elements.checkpointFailureWarning.hidden = false;
+      window.clearTimeout(checkpointResetTimerId);
+      checkpointResetTimerId = window.setTimeout(resetQuizAfterCheckpointFailure, 1700);
+    }
+
+    function resetQuizAfterCheckpointFailure() {
+      elements.checkpointFailureWarning.hidden = true;
+      if (elements.brainBreakDialog.open) elements.brainBreakDialog.close();
+      state.answers = Array(state.quiz.questions.length).fill(null);
+      state.index = 0;
+      state.completedBrainBreaks = [];
+      state.activeBrainBreak = null;
+      state.announcedQuestion67 = false;
+      state.timedOut = false;
+      state.remaining = state.quiz.minutes * 60;
+      state.deadline = Date.now() + state.remaining * 1000;
+      saveProgress(false);
+      renderQuestion(true);
+      startTimer();
     }
 
     function continueAfterBrainBreak() {
@@ -1683,7 +1744,7 @@
 
     function openPaymentWall() {
       if (elements.paymentWall.open) return;
-      if (!elements.blackoutOverlay.hidden || elements.brainBreakDialog.open) {
+      if (!elements.blackoutOverlay.hidden || !elements.checkpointFailureWarning.hidden || elements.brainBreakDialog.open) {
         paywallTimerId = window.setTimeout(openPaymentWall, 1000);
         return;
       }
@@ -1723,7 +1784,7 @@
     }
 
     function startBlackout() {
-      if (document.hidden || elements.paymentWall.open || elements.brainBreakDialog.open) {
+      if (document.hidden || elements.paymentWall.open || elements.brainBreakDialog.open || !elements.checkpointFailureWarning.hidden) {
         scheduleBlackout();
         return;
       }
@@ -1798,6 +1859,11 @@
     });
 
     window.addEventListener('keydown', (event) => {
+      if (!elements.checkpointFailureWarning.hidden) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       if (!elements.blackoutOverlay.hidden) {
         event.preventDefault();
         event.stopPropagation();
